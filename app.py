@@ -2,6 +2,9 @@ from flask import Flask, request, jsonify
 import os
 from ultralytics import YOLO
 import numpy as np
+import requests
+import time
+import pandas as pd
 
 import torch
 import torch.nn as nn
@@ -15,7 +18,6 @@ import gymnasium as gym
 from gymnasium.wrappers import FlattenObservation
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib
 import tank_env
 
 
@@ -70,7 +72,7 @@ class Episode:
         self.episode_reward = 0
         self.state, self.info = env.reset(options=now_state)
 
-def create_agent(hidden_dimensions, dropout):
+def create_agent(env, hidden_dimensions, dropout):
     INPUT_FEATURES = env.observation_space.shape[0]
     HIDDEN_DIMENSIONS = hidden_dimensions
     ACTOR_OUTPUT_FEATURES = env.action_space.n
@@ -118,14 +120,13 @@ def calculate_surrogate_loss(
 
 def calculate_losses(surrogate_loss, entropy, entropy_coefficient, returns, value_pred):
     entropy_bonus = entropy_coefficient * entropy
-    policy_loss = -(surrogate_loss + entropy_bonus).sum() # 딥러닝 모델은 손실을 '최소화'하려 하므로 '최대화'되어야 할 값에 음수를 취함 
-    value_loss = f.smooth_l1_loss(returns, value_pred).sum() # smooth_l1_loss는 이상치에 덜 민감함 
+    policy_loss = -(surrogate_loss + entropy_bonus).mean() # 딥러닝 모델은 손실을 '최소화'하려 하므로 '최대화'되어야 할 값에 음수를 취함 
+    value_loss = f.smooth_l1_loss(returns, value_pred).mean() # smooth_l1_loss는 이상치에 덜 민감함
+
+    # total_loss =  -entropy_bonus - policy_loss + value_loss
     return policy_loss, value_loss
 
-
-
-
-def forward_pass(env, agent, episode, now_state):
+def forward_pass(env, agent, episode, now_state, episode_counter):
     # 환경 초기화로 상태를 받아옴
     episode = episode
     agent.train() # nn.Module 클래스의 함수 
@@ -134,6 +135,11 @@ def forward_pass(env, agent, episode, now_state):
     action_pred, value_pred = agent(state) # forward()가 수행된다고 봐야  
     action_prob = f.softmax(action_pred, dim=-1) # action_pred는 로짓(logit)이기 때문에 소프트맥스 함수로 확률로 변환 
     dist = distributions.Categorical(action_prob) # 확률 분포로 바꾸는데 카테고리컬하게
+    print(dist.probs)
+    # if episode_counter < 10:
+    #     action = np.random.randint(0, 3)
+    #     action = torch.tensor(action).to(device).unsqueeze(0)
+    # else:
     action = dist.sample() # 확률 분포에 따라 행동 샘플링
     log_prob_action = dist.log_prob(action) # 선택된 행동의 로그 확률을 계산하여 추후 대리 목적 함수 계산에 사용 
     state, reward, terminated, truncated, _ = env.step(now_state) # 행동 텐서를 스칼라로 변환하여 환경 1스텝 진행 및 다음 값 받음
@@ -146,16 +152,6 @@ def forward_pass(env, agent, episode, now_state):
     episode.episode_reward += reward
     return action.item(), done
 
-def get_tensor_from_episode(episode, discount_factor):
-    states = torch.cat(episode.states).to(device) # 리스트에 저장된 상태 텐서들을 연결하여 단일 텐서로 만듬
-    actions = torch.cat(episode.actions).to(device)
-    actions_log_probability = torch.cat(episode.actions_log_probability).to(device)
-    values = torch.cat(episode.values).squeeze(-1).to(device) # 가치 예측 텐서들을 연결하고 마지막 차원을 제거
-    returns = calculate_returns(episode.rewards, discount_factor)
-    advantages = calculate_advantages(episode.returns, values)
-    episode_reward = episode.episode_reward
-    return episode_reward, states, actions, actions_log_probability, advantages, returns
-
 def update_policy(
         agent,
         episode,
@@ -164,7 +160,8 @@ def update_policy(
         ppo_steps,
         epsilon,
         entropy_coefficient,
-        batch_size
+        batch_size,
+        value_loss_coef
         ):
     states = torch.cat(episode.states).to(device) # 리스트에 저장된 상태 텐서들을 연결하여 단일 텐서로 만듬
     actions = torch.cat(episode.actions).to(device)
@@ -187,7 +184,7 @@ def update_policy(
     batch_dataset = DataLoader(
             training_results_dataset,
             batch_size=batch_size,
-            shuffle=False)
+            shuffle=True)
     for _ in range(ppo_steps):
         for batch_idx, (states, actions, actions_log_probability_old, advantages, returns) in enumerate(batch_dataset):
             # 입력된 모든 상태 정보에 대한 새로운 행동, 가치 예측치를 산출 
@@ -197,8 +194,10 @@ def update_policy(
             probability_distribution_new = distributions.Categorical(
                     action_prob)
             entropy = probability_distribution_new.entropy()
+            print(f'Entropy: {entropy}')
             # 과거 행동 확률과 새로운 행동 확률을 calculate_surrogate_loss 함수에 전달  
             actions_log_probability_new = probability_distribution_new.log_prob(actions)
+            print(f"Action Probs: {probability_distribution_new.probs}")
             surrogate_loss = calculate_surrogate_loss(
                     actions_log_probability_old,
                     actions_log_probability_new,
@@ -210,21 +209,22 @@ def update_policy(
                     entropy,
                     entropy_coefficient,
                     returns,
-                    value_pred)
+                    value_pred,
+                    )
+            total_loss = policy_loss + value_loss * value_loss_coef
             # 최적화 함수 기울기 초기화
             optimizer.zero_grad()
-            # 정책 손실 기울기 역전파
-            policy_loss.backward()
-            # 가치 손실 기울기 역전파
-            value_loss.backward()
+            # 손실 기울기 역전파
+            total_loss.backward()
             # 기울기 합산하여 적용 후 다음 단계로 진행 
             optimizer.step()
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
     # 평균 정책 손실과 평균 가치 손실을 반환 
-    torch.save(agent.state_dict(), 'model_weights.pth')
     return total_policy_loss / ppo_steps, total_value_loss / ppo_steps
 
+def send_reset_message():
+    request = requests.get('http://172.21.160.1:5522/click', timeout=10)
 
 
 # Initialize Flask server
@@ -236,32 +236,37 @@ model = YOLO('yolov8n.pt')
 # Action commands
 action_command = ["FIRE"]
 
-MAX_EPISODES = 1000              
+MAX_EPISODES = 500              
 DISCOUNT_FACTOR = 0.99
 REWARD_THRESHOLD = 8
 PRINT_INTERVAL = 10
 PPO_STEPS = 10
-N_TRIALS = 120
+N_TRIALS = 512
 EPSILON = 0.25
-ENTROPY_COEFFICIENT = 0.02
+ENTROPY_COEFFICIENT = 0.05
 HIDDEN_DIMENSIONS = 64
 DROPOUT = 0.2
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.0005
 BATCH_SIZE = 128
+VALUE_LOSS_COEF = 0.5
 
 env = gym.make('gymnasium_env/TankEnv-v0', max_steps=N_TRIALS, threshold = REWARD_THRESHOLD)
 rng = np.random.default_rng(seed=123)
-agent = create_agent(hidden_dimensions=HIDDEN_DIMENSIONS, dropout=DROPOUT)
+agent = create_agent(env, hidden_dimensions=HIDDEN_DIMENSIONS, dropout=DROPOUT)
 print('Agent Initialized')
 optimizer = optim.Adam(agent.parameters(), lr=LEARNING_RATE)
 print('Optimizer Initialized')
 
 step_counter = 1
-now_state = [0, 0, 0, 0]
+now_state = [0, 0, 0, 0, 0]
 episode = None
-episode_counter = 1
+episode_counter = 0
 move_command = ""
 destination = [0, 0]
+episode_rewards = []
+episode_actions = []
+command_list = []
+episode_commands = []
 
 action_to_direction = {
             0: "W",
@@ -305,43 +310,66 @@ def detect():
 def info():
     data = request.get_json(force=True)
 
+    global agent
     global now_state
     global episode
     global move_command
     global episode_counter
     global step_counter
+    global episode_rewards
+    global command_list
+    global episode_commands
 
     if not data:
         return jsonify({"error": "No JSON received"}), 400
 
     # print("📨 /info data received:", data)
-    now_state[0] = data['playerPos']['x']
-    now_state[1] = data['playerPos']['z']
-    now_state[2] = data['enemyPos']['x']
-    now_state[3] = data['enemyPos']['z']
+    now_state[0] = round(data['playerPos']['x'], 2)
+    now_state[1] = round(data['playerPos']['z'], 2)
+    now_state[2] = round(data['enemyPos']['x'], 2)
+    now_state[3] = round(data['enemyPos']['z'], 2)
+    now_state[4] = data['playerSpeed']
 
 
     if episode is None:
         episode = Episode(env, now_state)
-        print(f'Episode {episode_counter} has been initialized')
+        print(f'Episode {episode_counter + 1} has been initialized')
 
     if episode.done:
         print('Episode has been finished!!')
         policy_loss, value_loss = update_policy(agent, episode, discount_factor=DISCOUNT_FACTOR, \
                                                 optimizer=optimizer, ppo_steps=PPO_STEPS, epsilon=EPSILON, \
-                                                entropy_coefficient=ENTROPY_COEFFICIENT, batch_size=BATCH_SIZE)
+                                                entropy_coefficient=ENTROPY_COEFFICIENT, batch_size=BATCH_SIZE, value_loss_coef=VALUE_LOSS_COEF)
         print(f'Policy Loss: {policy_loss}, Value Loss: {value_loss}')
-        episode_counter += 1
+        
         step_counter = 0
+        episode_rewards.append(episode.rewards)
+        episode_commands.append(command_list)
+        command_list = []
+        print(episode_commands)
+
+        if episode_counter % 10 == 0:
+            torch.save(agent.state_dict(), f'model_weights_{episode_counter}.pth')
+            seriese = pd.DataFrame(episode_rewards)
+            seriese.to_csv('./rewards.csv', encoding='cp949')
+            commands = pd.DataFrame(episode_commands)
+            commands.to_csv('./commands.csv', encoding='cp949')
+
+        episode_counter += 1
         episode = None
+
         return jsonify({"status": "success", "control": "reset"})
 
+
     else:
-        move_command, done = forward_pass(env, agent, episode=episode, now_state=now_state)
+        move_command, done = forward_pass(env, agent, episode=episode, now_state=now_state, episode_counter=episode_counter)
         move_command = action_to_direction[move_command]
+        command_list.append(move_command)
         episode.state = now_state
         episode.done = done
         print(f'Step {step_counter} has been finished / state: {episode.state} / done: {episode.done}')
+        if step_counter % 10 == 0 :
+            print(command_list)
         step_counter += 1
 
     # if data.get("time", 0) > 15:
@@ -439,7 +467,7 @@ def update_obstacle():
     return jsonify({'status': 'success', 'message': 'Obstacle data received'}), 200
 
 @app.route('/init', methods=['GET'])
-def init():
+async def init():
     global rng
     random_coord = rng.integers(low=10, high=290, size=4)
     config = {
@@ -449,15 +477,16 @@ def init():
         "blStartZ": int(random_coord[1]),
         "rdStartX": int(random_coord[2]), #Red Start Position
         "rdStartY": 10,
-        "rdStartZ": int(random_coord[3]),
-        # "logMode": True
+        "rdStartZ": int(random_coord[3])
     }
     print("🛠️ Initialization config sent via /init:", config)
+    send_reset_message()
     return jsonify(config)
 
 @app.route('/start', methods=['GET'])
 def start():
     print("🚀 /start command received")
+    
     return jsonify({"control": ""})
 
 if __name__ == '__main__':
