@@ -51,8 +51,8 @@ class Episode:
 class BackboneNetwork(nn.Module):
     def __init__(self, in_features, hidden_dimensions, out_features, dropout):
         super().__init__()
-        self.layer1 = nn.Linear(in_features, hidden_dimensions)
-        self.layer2 = nn.Linear(hidden_dimensions, hidden_dimensions)
+        self.layer1 = nn.Linear(in_features, hidden_dimensions * 2)
+        self.layer2 = nn.Linear(hidden_dimensions * 2, hidden_dimensions)
         self.layer3 = nn.Linear(hidden_dimensions, out_features)
         self.dropout = nn.Dropout(dropout)
     def forward(self, x):
@@ -133,7 +133,7 @@ def calculate_losses(surrogate_loss, entropy, entropy_coefficient, returns, valu
     # total_loss =  -entropy_bonus - policy_loss + value_loss
     return policy_loss, value_loss
 
-def forward_pass(env, agent, episode, now_state, grid_epsilon, episode_count):
+def forward_pass(env, agent, episode, grid_epsilon, episode_count, random_episode):
     # 환경 초기화로 상태를 받아옴
     episode = episode
     agent.train() # nn.Module 클래스의 함수 
@@ -141,14 +141,14 @@ def forward_pass(env, agent, episode, now_state, grid_epsilon, episode_count):
     episode.states.append(state) # states 버퍼에 상태를 추가
     action_pred, value_pred = agent(state) # forward()가 수행된다고 봐야
     # print(f'action pred shape: {action_pred.shape} / value pred shape: {value_pred.shape}')
-    if episode_count < 20:
+    if episode_count < random_episode:
         random_pred = np.array(np.array(np.random.random(4)))
         action_prob = f.softmax(torch.FloatTensor(random_pred).unsqueeze(0).to(device).clone(), dim=-1)
         # print('random prob:', action_prob, action_prob.shape)
     else:    
         action_prob = f.softmax(action_pred, dim=-1) # action_pred는 로짓(logit)이기 때문에 소프트맥스 함수로 확률로 변환
         # print('action prob:', action_prob, action_prob.shape)
-    noise = torch.rand_like(action_prob) * 0.1 # 확률에 잡음 추가
+    noise = torch.rand_like(action_prob) * grid_epsilon # 확률에 잡음 추가
     action_prob = action_prob + noise
     action_prob = action_prob / action_prob.sum(dim=-1, keepdim=True)
     dist = distributions.Categorical(action_prob) # 확률 분포로 바꾸는데 카테고리컬하게
@@ -159,7 +159,7 @@ def forward_pass(env, agent, episode, now_state, grid_epsilon, episode_count):
         action = dist.sample() # 확률 분포에 따라 행동 샘플링
         # print(action, action.shape, 'dist')
     log_prob_action = dist.log_prob(action) # 선택된 행동의 로그 확률을 계산하여 추후 대리 목적 함수 계산에 사용 
-    state, reward, terminated, truncated, info = env.step([now_state, episode.actions]) # 행동 텐서를 스칼라로 변환하여 환경 1스텝 진행 및 다음 값 받음
+    state, reward, terminated, truncated, info = env.step([episode.state, episode.actions]) # 행동 텐서를 스칼라로 변환하여 환경 1스텝 진행 및 다음 값 받음
     done = terminated or truncated
     # print(f'state: {state} / type: {type(state)} / shape: {state.shape}')
     # print(f'action: {action} / type: {type(action)} / shape: {action.shape}')
@@ -171,6 +171,7 @@ def forward_pass(env, agent, episode, now_state, grid_epsilon, episode_count):
     episode.actions_log_probability.append(log_prob_action) # 마찬가지로 버퍼에 추가
     episode.values.append(value_pred)
     episode.rewards.append(reward)
+    # print(f'Episode Info // Value: {value_pred.shape} // Reward: {reward.shape}')
     episode.done = done
     episode.episode_reward += reward
     episode.info = info
@@ -272,13 +273,15 @@ def change_degree(my_d, x, y, des_x, des_y):
         heading = -(heading - 180)
     if heading < -180:
         heading = 360 + heading
-    return heading
+    sin = np.sin(heading)
+    cos = np.cos(heading)
+    return sin, cos
 
 # Initialize Flask server
 app = Flask(__name__)
 log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
-log.disabled = False
+# log.setLevel(logging.ERROR)
+# log.disabled = False
 
 
 # Load YOLO model
@@ -290,8 +293,8 @@ action_command = ["FIRE"]
 MAX_EPISODES = 200              
 DISCOUNT_FACTOR = 0.99
 REWARD_THRESHOLD = 8
-PRINT_INTERVAL = 8
-PPO_STEPS = 10
+PRINT_INTERVAL = 10
+PPO_STEPS = 8
 N_TRIALS = 512
 EPSILON = 0.2
 ENTROPY_COEFFICIENT = 0.1
@@ -302,30 +305,33 @@ BATCH_SIZE = 128
 VALUE_LOSS_COEF = 0.5
 
 env = gym.make('gymnasium_env/TankEnv-v0', max_steps=N_TRIALS, threshold = REWARD_THRESHOLD)
-rng = np.random.default_rng(seed=4)
+rng = np.random.default_rng(seed=8)
+
+# 모델 초기화 // 모델 웨이트 입혀서 수행 가능.
 agent = create_agent(env, hidden_dimensions=HIDDEN_DIMENSIONS, dropout=DROPOUT)
-checkpoint = torch.load("model_weights_8.pth", map_location=device)
-agent.load_state_dict(checkpoint)
+# checkpoint = torch.load("model_weights_20.pth", map_location=device)
+# agent.load_state_dict(checkpoint)
 print('Agent Initialized')
 
-# 학습 디버깅 설정. 추후 삭제
-# torch.autograd.set_detect_anomaly(True)
-
-# 모델 가중치 덮어씌우기
 # 코드 작성 필요 
 
 optimizer = optim.Adam(agent.parameters(), lr=LEARNING_RATE)
 print('Optimizer Initialized')
 
-step_counter = 1
-now_state = [0, 0, 0, 0, 0, 0]
+step_counter = 0
+now_state = [0, 0, 0, 0, 0, 0, 0]
 episode = None
+
+# 학습 기록을 위한 카운터 변경
+# 30
 episode_counter = 0
+
 move_command = ""
 episode_rewards = []
 episode_actions = []
 command_list = []
 episode_commands = []
+
 calculating = False
 
 action_to_direction = {
@@ -384,33 +390,35 @@ def info():
     if not data:
         return jsonify({"error": "No JSON received"}), 400
     
+    if calculating:
+        return jsonify({"status": "Calculating", "message": "Some Calculation are going on..."}), 102
+    
     player_x = round(data['playerPos']['x'], 2)
     player_y = round(data['playerPos']['z'], 2)
     des_x = round(data['enemyPos']['x'], 2)
     des_y = round(data['enemyPos']['z'], 2)
     player_speed = round(data['playerSpeed'], 4)
-    degree = change_degree(data['playerBodyX'], player_x, player_y, des_x, des_y)
+    sin, cos = change_degree(data['playerBodyX'], player_x, player_y, des_x, des_y)
 
     now_state[0] = player_x
     now_state[1] = player_y
     now_state[2] = des_x
     now_state[3] = des_y
     now_state[4] = player_speed
-    now_state[5] = degree
-
-    
-    if calculating:
-        return jsonify({"status": "Calculating", "message": "Some Calculation are going on..."}), 102
+    now_state[5] = sin
+    now_state[6] = cos
     
     if episode is None:
+        calculating = True
         episode = Episode(env, now_state)
         print(f'Episode {episode_counter + 1} has been initialized')
-        return jsonify({"status": "success", "control": ""})
+        calculating = False
+        return jsonify({"status": "success", "control": "reset"})
 
     if episode.done:
         # try:
         calculating = True
-        print('Episode has been finished!!')
+        print(f'Episode {episode_counter + 1} has been finished!!')
         policy_loss, value_loss = update_policy(agent, episode, discount_factor=DISCOUNT_FACTOR, \
                                                 optimizer=optimizer, ppo_steps=PPO_STEPS, epsilon=EPSILON, \
                                                 entropy_coefficient=ENTROPY_COEFFICIENT, batch_size=BATCH_SIZE, value_loss_coef=VALUE_LOSS_COEF)
@@ -419,23 +427,29 @@ def info():
         episode_rewards.append(episode.rewards)
         episode = None
         step_counter = 0
-        now_state = [0, 0, 0, 0, 0, 0]
+        now_state = [0, 0, 0, 0, 0, 0, 0]
         episode_commands.append(command_list)
         counter = Counter(command_list)
         print(counter)
         command_list = []
         move_command = ""
 
-        if episode_counter % PRINT_INTERVAL == 0:
-            torch.save(agent.state_dict(), f'model_weights_{episode_counter}.pth')
-            seriese = pd.DataFrame(episode_rewards)
-            seriese.to_csv('./rewards.csv', encoding='cp949')
-            commands = pd.DataFrame(episode_commands)
-            commands.to_csv('./commands.csv', encoding='cp949')
-
         episode_counter += 1
-        
+
+        try:
+            if episode_counter % PRINT_INTERVAL == 0:
+                torch.save(agent.state_dict(), f'model_weights_{episode_counter}.pth')
+            torch.save(agent.state_dict(), f'model_weights.pth')
+            seriese = pd.DataFrame(episode_rewards)
+            seriese.to_csv(f'./rewards.csv', encoding='cp949')
+            commands = pd.DataFrame(episode_commands)
+            commands.to_csv(f'./commands.csv', encoding='cp949')
+        except Exception() as e:
+            print(f'Error has been occurred during saving logs. {e}')
+
         calculating = False
+        print('Ready for the next episode!')
+        time.sleep(1)
         return jsonify({"status": "success", "control": "reset"})
         # except Exception as e:
         #     calculating = False
@@ -447,14 +461,16 @@ def info():
 
     else:
         calculating = True
-        move_command, done, info = forward_pass(env, agent, episode=episode, now_state=now_state, grid_epsilon = EPSILON * (1 - episode_counter/MAX_EPISODES), episode_count = episode_counter)
+        episode.state = now_state
+        move_command, done, info = forward_pass(env, agent, episode=episode, grid_epsilon = ENTROPY_COEFFICIENT * (1 - episode_counter/MAX_EPISODES), episode_count = episode_counter, random_episode=10)
         move_command = action_to_direction[move_command]
         command_list.append(move_command)
-        episode.state = now_state
         episode.done = done
-        print(f'Step {step_counter} has been finished / state: {episode.state} / info: {info}')
+        info_reward = info['reward']
+        info_distance = info['distance']
+        print(f'Episode {episode_counter + 1} / Step {step_counter} has been finished / state: {episode.state[:4]} {episode.state[5]:.2f} {episode.state[6]:.2f} / reward: {info_reward} / distance: {info_distance}' )
         if step_counter % 10 == 0 :
-            print(command_list)
+            # print(command_list)
             print(Counter(command_list))
         step_counter += 1
         calculating = False
@@ -468,7 +484,6 @@ def info():
 @app.route('/update_position', methods=['POST'])
 def update_position():
     data = request.get_json()
-    global now_state
 
     if not data or "position" not in data:
         return jsonify({"status": "ERROR", "message": "Missing position data"}), 400
@@ -499,7 +514,6 @@ def get_move():
 
 @app.route('/get_action', methods=['GET'])
 def get_action():
-    global calculating
     if calculating:
         return jsonify({"status": "Calculating", "message": "Some Calculation are going on..."}), 102
     global action_command
@@ -558,25 +572,35 @@ def update_obstacle():
     return jsonify({'status': 'success', 'message': 'Obstacle data received'}), 200
 
 @app.route('/init', methods=['GET'])
-async def init():
+def init():
     global rng
-    random_coord = rng.integers(low=10, high=290, size=4)
+    global calculating
+    global episode_counter
+    if calculating:
+        return jsonify({"status": "Calculating", "message": "Some Calculation are going on..."}), 102
+    calculating = True
+    curriculum = 40 + episode_counter
     while True:
+        random_coord = rng.integers(low=10, high=290, size=4)
         x = int(random_coord[0])
         z = int(random_coord[1])
-        red_x = int(random_coord[2])
-        red_z = int(random_coord[3])
-        distance = np.sqrt((x - red_x) ** 2 + (z - red_z) ** 2)
-        if distance > REWARD_THRESHOLD + 4:
+        if episode_counter < 100:
+            des_x = rng.integers(low= x - curriculum, high= x + curriculum, size = 1)[0]
+            des_z = rng.integers(low= z - curriculum, high= z + curriculum, size = 1)[0]
+        else:
+            des_x = int(random_coord[2])
+            des_z = int(random_coord[3])
+        distance = np.sqrt((x - des_x) ** 2 + (z - des_z) ** 2)
+        if (distance > REWARD_THRESHOLD + 10) and (des_x > 5 and des_x < 295 and des_z > 5 and des_z < 295):
             break
     config = {
         "startMode": "start",  # Options: "start" or "pause"
-        "blStartX": int(random_coord[0]),  #Blue Start Position
+        "blStartX": int(x),  #Blue Start Position
         "blStartY": 10,
-        "blStartZ": int(random_coord[1]),
-        "rdStartX": int(random_coord[2]), #Red Start Position
+        "blStartZ": int(z),
+        "rdStartX": int(des_x), #Red Start Position
         "rdStartY": 10,
-        "rdStartZ": int(random_coord[3]),
+        "rdStartZ": int(des_z),
         "trackingMode": True,
         "detactMode": False,
         "logMode": True,
@@ -585,7 +609,8 @@ async def init():
         "saveLog": False,
         "saveLidarData": False
     }
-    print("🛠️ Initialization config sent via /init:", config["blStartX"], config["blStartY"], config["rdStartX"], config["rdStartY"])
+    print("🛠️ Initialization config sent via /init:", config["blStartX"], config["blStartZ"], config["rdStartX"], config["rdStartZ"])
+    calculating = False
     # send_reset_message()
     return jsonify(config)
 
@@ -596,4 +621,4 @@ def start():
     return jsonify({"control": ""})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5254, debug=True)
+    app.run(host='0.0.0.0', port=5256, debug=True)
