@@ -72,7 +72,7 @@ class TankEnv(gym.Env):
         
         if at_boundary:
             # terminated = True
-            reward -= 0.002
+            reward -= 0.001
             # self.steps = 0
             print('📌📌📌📌 Out of boundary 📌📌📌📌')
 
@@ -84,7 +84,7 @@ class TankEnv(gym.Env):
 
         if self.steps >= self.max_steps:
             truncated = True
-            reward -= 3
+            reward -= 1
             self.steps = 0
             print('🚧🚧🚧🚧 Out of max steps 🚧🚧🚧🚧')
 
