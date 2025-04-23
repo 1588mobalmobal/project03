@@ -1,0 +1,30 @@
+        at_boundary = x < 1 / 300 or x > 299 or y < 1 or y > 299
+        distance = np.sqrt((x - dest_x) ** 2 + (y - dest_y) ** 2)
+        
+        phi = -distance / 300 * 2
+        prev_phi = -self.prev_distance / 300 * 2
+        reward = phi - prev_phi
+        reward -= 0.002 # 시간 패널티
+
+        last_move = actions[-1:]
+        if len(actions) > 10 and actions[-7:] == last_move * 7:
+            reward -= 0.01
+
+        terminated = False
+        truncated = False
+
+        
+        if at_boundary:
+            reward -= 0.02
+
+        if distance < self.threshold:
+            terminated = True
+            reward += 10
+            self.steps = 0
+            print('😊😊😊😊 Touched the Goal 😊😊😊😊 Touched the Goal 😊😊😊😊')
+
+        if self.steps >= self.max_steps:
+            truncated = True
+            reward -= 1
+            self.steps = 0
+            print('📌📌📌📌 Out of max steps 📌📌📌📌 Out of max steps 📌📌📌📌')

@@ -51,42 +51,39 @@ class TankEnv(gym.Env):
 
         x, y, dest_x, dest_y, speed, sin, cos = map(float, data)
         
-        at_boundary = x < 1 / 300 or x > 299 or y < 1 or y > 299
+        at_boundary = x < 1 or x > 299 or y < 1 or y > 299
         distance = np.sqrt((x - dest_x) ** 2 + (y - dest_y) ** 2)
-        
-        phi = -distance / 300 * 2
-        prev_phi = -self.prev_distance / 300 * 2
-        reward = phi - prev_phi
-        reward -= 0.002 # 시간 패널티
+        reward = (self.prev_distance - distance) / 20  # 기본 보상 강화
+        reward -= 0.005  # 시간 패널티 증가
+        reward += 0.05 * (1 - distance / 300)  # 절대 거리 보너스 축소
 
         last_move = actions[-1:]
-        if len(actions) > 10 and actions[-7:] == last_move * 7:
-            reward -= 0.05
-            
-        # if len(actions) > 3 and abs(diection) < 45 and actions[-3] == [0, 0, 0]:
-        #     reward += 0.001r
+        if len(actions) > 7 and actions[-7:] == last_move * 7:
+            reward -= 0.03  # 반복 행동 패널티 강화
+        if abs(distance - self.prev_distance) < 0.01:
+            reward -= 0.02  # 정체 패널티
+
+        if at_boundary and distance >= self.prev_distance:
+            reward -= 0.01
+        if at_boundary:
+            if (x < 1 and last_move == 'E') or (x > 299 and last_move == 'W') or (y < 1 and last_move == 'N') or (y > 299 and last_move == 'S'):
+                reward += 0.02
 
         terminated = False
         truncated = False
 
-        
-        if at_boundary:
-            # terminated = True
-            reward -= 0.001
-            # self.steps = 0
-            print('📌📌📌📌 Out of boundary 📌📌📌📌')
-
+        if distance < 10:  # 근거리 보너스
+            reward += 0.5
         if distance < self.threshold:
             terminated = True
-            reward += 10
+            reward += 5
             self.steps = 0
             print('😊😊😊😊 Touched the Goal 😊😊😊😊')
 
         if self.steps >= self.max_steps:
             truncated = True
-            reward -= 1
             self.steps = 0
-            print('🚧🚧🚧🚧 Out of max steps 🚧🚧🚧🚧')
+            print('📌📌📌📌 Out of max steps 📌📌📌📌')
 
         state = np.array([x / 300, y / 300, dest_x / 300, dest_y / 300, speed / 100, sin, cos], dtype=np.float32)
 

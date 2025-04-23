@@ -110,15 +110,15 @@ def forward_pass(env, agent, episode, grid_epsilon, episode_count, random_episod
     else:    
         action_prob = f.softmax(action_pred, dim=-1) # action_pred는 로짓(logit)이기 때문에 소프트맥스 함수로 확률로 변환
         # print('action prob:', action_prob, action_prob.shape)
-    noise = torch.rand_like(action_prob) * grid_epsilon # 확률에 잡음 추가
-    action_prob = action_prob + noise
+    # noise = torch.rand_like(action_prob) * grid_epsilon # 확률에 잡음 추가
+    # action_prob = action_prob + noise
     action_prob = action_prob / action_prob.sum(dim=-1, keepdim=True)
     dist = distributions.Categorical(action_prob) # 확률 분포로 바꾸는데 카테고리컬하게
-    if np.random.random() < grid_epsilon:  # grid epsilon 확률로 랜덤행동
-        action = torch.tensor(np.random.randint(0, env.action_space.n)).unsqueeze(0).to(device).clone()
+    # if np.random.random() < grid_epsilon:  # grid epsilon 확률로 랜덤행동
+    #     action = torch.tensor(np.random.randint(0, env.action_space.n)).unsqueeze(0).to(device).clone()
         # print(action, action.shape, 'random')
-    else:
-        action = dist.sample() # 확률 분포에 따라 행동 샘플링
+    # else:
+    action = dist.sample() # 확률 분포에 따라 행동 샘플링
         # print(action, action.shape, 'dist')
     log_prob_action = dist.log_prob(action) # 선택된 행동의 로그 확률을 계산하여 추후 대리 목적 함수 계산에 사용 
     state, reward, terminated, truncated, info = env.step([episode.state, episode.actions]) # 행동 텐서를 스칼라로 변환하여 환경 1스텝 진행 및 다음 값 받음

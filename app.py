@@ -74,7 +74,7 @@ action_command = ["FIRE"]
 
 MAX_EPISODES = 300              
 DISCOUNT_FACTOR = 0.99
-REWARD_THRESHOLD = 8
+REWARD_THRESHOLD = 12
 PRINT_INTERVAL = 10
 PPO_STEPS = 10
 N_TRIALS = 512
@@ -87,11 +87,12 @@ BATCH_SIZE = 128
 VALUE_LOSS_COEF = 0.5
 
 env = gym.make('gymnasium_env/TankEnv-v0', max_steps=N_TRIALS, threshold = REWARD_THRESHOLD)
-rng = np.random.default_rng(seed=9)
+rng = np.random.default_rng(seed=13)
 
 # 모델 초기화 // 모델 웨이트 입혀서 수행 가능.
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 agent = ppo.create_agent(env, hidden_dimensions=HIDDEN_DIMENSIONS, dropout=DROPOUT)
-# checkpoint = torch.load("model_weights_20.pth", map_location=device)
+# checkpoint = torch.load("model_weights_200.pth", map_location=device)
 # agent.load_state_dict(checkpoint)
 print('Agent Initialized')
 
@@ -244,7 +245,7 @@ def info():
     else:
         calculating = True
         episode.state = now_state
-        move_command, done, info = ppo.forward_pass(env, agent, episode=episode, grid_epsilon = ENTROPY_COEFFICIENT * (1 - episode_counter/MAX_EPISODES), episode_count = episode_counter, random_episode=50)
+        move_command, done, info = ppo.forward_pass(env, agent, episode=episode, grid_epsilon = ENTROPY_COEFFICIENT * (1 - episode_counter/MAX_EPISODES), episode_count = episode_counter, random_episode=30)
         move_command = action_to_direction[move_command]
         command_list.append(move_command)
         episode.done = done
@@ -361,12 +362,12 @@ def init():
     if calculating:
         return jsonify({"status": "Calculating", "message": "Some Calculation are going on..."}), 102
     calculating = True
-    curriculum = 40 + episode_counter
+    curriculum = episode_counter + REWARD_THRESHOLD + 10
     while True:
         random_coord = rng.integers(low=10, high=290, size=4)
         x = int(random_coord[0])
         z = int(random_coord[1])
-        if episode_counter < 100:
+        if episode_counter < 120:
             des_x = rng.integers(low= x - curriculum, high= x + curriculum, size = 1)[0]
             des_z = rng.integers(low= z - curriculum, high= z + curriculum, size = 1)[0]
         else:
@@ -403,4 +404,4 @@ def start():
     return jsonify({"control": ""})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5256, debug=True)
+    app.run(host='0.0.0.0', port=5257, debug=True)
