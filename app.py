@@ -85,6 +85,7 @@ DROPOUT = 0.2
 LEARNING_RATE = 0.0002
 BATCH_SIZE = 128
 VALUE_LOSS_COEF = 0.5
+RANDOM_EPISODE = 30
 
 env = gym.make('gymnasium_env/TankEnv-v0', max_steps=N_TRIALS, threshold = REWARD_THRESHOLD)
 rng = np.random.default_rng(seed=13)
@@ -245,7 +246,7 @@ def info():
     else:
         calculating = True
         episode.state = now_state
-        move_command, done, info = ppo.forward_pass(env, agent, episode=episode, grid_epsilon = ENTROPY_COEFFICIENT * (1 - episode_counter/MAX_EPISODES), episode_count = episode_counter, random_episode=30)
+        move_command, done, info = ppo.forward_pass(env, agent, episode=episode, grid_epsilon = ENTROPY_COEFFICIENT * (1 - episode_counter/MAX_EPISODES), episode_count = episode_counter, random_episode=RANDOM_EPISODE)
         move_command = action_to_direction[move_command]
         command_list.append(move_command)
         episode.done = done

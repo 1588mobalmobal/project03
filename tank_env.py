@@ -53,18 +53,23 @@ class TankEnv(gym.Env):
         
         at_boundary = x < 1 or x > 299 or y < 1 or y > 299
         distance = np.sqrt((x - dest_x) ** 2 + (y - dest_y) ** 2)
-        reward = (self.prev_distance - distance) / 20  # 기본 보상 강화
-        reward -= 0.005  # 시간 패널티 증가
-        reward += 0.05 * (1 - distance / 300)  # 절대 거리 보너스 축소
+        reward = (self.prev_distance - distance) / 100  # 기본 보상 강화
+        reward -= 0.01  # 시간 패널티 증가
+        reward += 0.01 * (1 - distance / 300)  # 절대 거리 보너스 축소
+
+        stuck = False
 
         last_move = actions[-1:]
         if len(actions) > 7 and actions[-7:] == last_move * 7:
             reward -= 0.03  # 반복 행동 패널티 강화
-        if abs(distance - self.prev_distance) < 0.01:
+        if abs(distance - self.prev_distance) < 0.25:
             reward -= 0.02  # 정체 패널티
+            stuck = True
 
-        if at_boundary and distance >= self.prev_distance:
-            reward -= 0.01
+        if at_boundary:
+            reward -= (distance) / 500
+            if stuck:
+                reward -= 0.1
         if at_boundary:
             if (x < 1 and last_move == 'E') or (x > 299 and last_move == 'W') or (y < 1 and last_move == 'N') or (y > 299 and last_move == 'S'):
                 reward += 0.02
@@ -72,8 +77,8 @@ class TankEnv(gym.Env):
         terminated = False
         truncated = False
 
-        if distance < 10:  # 근거리 보너스
-            reward += 0.5
+        if distance < 24:  # 근거리 보너스
+            reward += 0.1
         if distance < self.threshold:
             terminated = True
             reward += 5
